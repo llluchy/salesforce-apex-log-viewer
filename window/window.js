@@ -22,6 +22,10 @@ let activityTimerInterval = null;
 let pollingProgressInterval = null;
 let pollingProgress = 100;
 
+// TraceFlag renewal variables
+const TRACEFLAG_RENEWAL_INTERVAL = 3000000; // 50 minutes (3000 seconds)
+let traceFlagRenewalInterval = null;
+
 document.addEventListener('DOMContentLoaded', init);
 
 function init() {
@@ -147,6 +151,7 @@ async function loadState() {
       showMainView();
       fetchLogs();
       startPolling();
+      startTraceFlagRenewal();
     }
   }
   
@@ -178,6 +183,7 @@ async function connectToActiveTab() {
       showMainView();
       fetchLogs();
       startPolling();
+      startTraceFlagRenewal();
     } else {
       alert('连接失败：' + (response.error || '未知错误'));
     }
@@ -206,6 +212,7 @@ async function disconnect() {
     activeEnvId = null;
     currentUserName = null;
     stopPolling();
+    stopTraceFlagRenewal();
     updateEnvSelector();
     showWelcomeView();
     selectedLog = null;
@@ -220,6 +227,7 @@ async function handleEnvChange() {
   if (!newEnvId) {
     if (activeEnvId) {
       stopPolling();
+      stopTraceFlagRenewal();
       activeEnvId = null;
       currentUserName = null;
       showWelcomeView();
@@ -244,6 +252,7 @@ async function handleEnvChange() {
     showDetailEmpty();
     fetchLogs();
     startPolling();
+    startTraceFlagRenewal();
   } else {
     alert('切换环境失败：' + (response.error || '未知错误'));
   }
@@ -691,6 +700,43 @@ function stopPolling() {
   // Stop activity timer and polling progress
   stopActivityTimer();
   stopPollingProgress();
+}
+
+function startTraceFlagRenewal() {
+  if (traceFlagRenewalInterval) return;
+  
+  console.log('[DEBUG] Starting TraceFlag renewal timer...');
+  
+  // Renew immediately when starting
+  renewTraceFlag();
+  
+  // Then renew every 50 minutes
+  traceFlagRenewalInterval = setInterval(renewTraceFlag, TRACEFLAG_RENEWAL_INTERVAL);
+}
+
+function stopTraceFlagRenewal() {
+  if (traceFlagRenewalInterval) {
+    console.log('[DEBUG] Stopping TraceFlag renewal timer...');
+    clearInterval(traceFlagRenewalInterval);
+    traceFlagRenewalInterval = null;
+  }
+}
+
+async function renewTraceFlag() {
+  if (!activeEnvId) return;
+  
+  console.log('[DEBUG] Renewing TraceFlag...');
+  
+  try {
+    const response = await sendMessage({ action: 'renew-traceflag' });
+    if (response.success) {
+      console.log('[DEBUG] TraceFlag renewed successfully');
+    } else {
+      console.error('[DEBUG] Failed to renew TraceFlag:', response.error);
+    }
+  } catch (error) {
+    console.error('[DEBUG] Error renewing TraceFlag:', error.message);
+  }
 }
 
 function togglePolling() {
