@@ -82,6 +82,10 @@ async function autoDetectEnvironment(tabId, url) {
         console.log('[DEBUG] [USER-FLOW] User name is null, not saving');
       }
       
+      // Enable debug logging (create TraceFlag)
+      console.log('[DEBUG] [USER-FLOW] Calling enableDebugLogging(envId:', envId + ')');
+      await enableDebugLogging(envId);
+      
       await saveState();
       console.log('[DEBUG] [USER-FLOW] State saved');
     }
@@ -464,6 +468,181 @@ async function fetchCurrentUserName(envId) {
   }
 }
 
+// Debug Level name for Apex Log Viewer
+const DEBUG_LEVEL_NAME = 'ApexLogViewer_Debug';
+
+// Create or get DebugLevel for trace flag (using Tooling API)
+async function getOrCreateDebugLevel(envId) {
+  console.log('[DEBUG] [TRACE-FLAG] getOrCreateDebugLevel called, envId:', envId);
+  
+  try {
+    // First, try to find existing DebugLevel (Tooling API)
+    const soql = `SELECT Id FROM DebugLevel WHERE DeveloperName = '${DEBUG_LEVEL_NAME}' LIMIT 1`;
+    const queryResult = await makeApiRequestForEnv(envId, `/services/data/${SALESFORCE_API_VERSION}/tooling/query/?q=${encodeURIComponent(soql)}`);
+    
+    if (queryResult?.records?.length > 0) {
+      console.log('[DEBUG] [TRACE-FLAG] Found existing DebugLevel:', queryResult.records[0].Id);
+      return queryResult.records[0].Id;
+    }
+    
+    // Create new DebugLevel if not found (Tooling API)
+    console.log('[DEBUG] [TRACE-FLAG] Creating new DebugLevel');
+    const debugLevelData = {
+      DeveloperName: DEBUG_LEVEL_NAME,
+      MasterLabel: 'Apex Log Viewer Debug',
+      ApexCode: 'Finest',
+      ApexProfiling: 'Finest',
+      Callout: 'Finest',
+      Database: 'Finest',
+      System: 'Finest',
+      Validation: 'Finest',
+      Workflow: 'Finest'
+    };
+    
+    console.log('[DEBUG] [TRACE-FLAG] DebugLevel data:', JSON.stringify(debugLevelData));
+    const endpoint = `/services/data/${SALESFORCE_API_VERSION}/tooling/sobjects/DebugLevel`;
+    console.log('[DEBUG] [TRACE-FLAG] Creating DebugLevel at endpoint:', endpoint);
+    
+    const createResult = await makeApiRequestForEnv(envId, endpoint, {
+      method: 'POST',
+      body: JSON.stringify(debugLevelData)
+    });
+    
+    console.log('[DEBUG] [TRACE-FLAG] Create DebugLevel result:', JSON.stringify(createResult));
+    
+    if (createResult?.id) {
+      console.log('[DEBUG] [TRACE-FLAG] Created DebugLevel with Id:', createResult.id);
+      return createResult.id;
+    }
+    
+    console.error('[DEBUG] [TRACE-FLAG] Failed to create DebugLevel:', createResult);
+    return null;
+  } catch (error) {
+    console.error('[DEBUG] [TRACE-FLAG] getOrCreateDebugLevel error:', error.message);
+    return null;
+  }
+}
+
+// Create or update TraceFlag for current user (using Tooling API)
+async function createTraceFlag(envId, debugLevelId) {
+  console.log('[DEBUG] [TRACE-FLAG] createTraceFlag called, envId:', envId, 'debugLevelId:', debugLevelId);
+  
+  if (!debugLevelId) {
+    console.error('[DEBUG] [TRACE-FLAG] No DebugLevelId provided');
+    return null;
+  }
+  
+  try {
+    // First, get current user ID (using Chatter API - not Tooling API)
+    const userInfo = await makeApiRequestForEnv(envId, `/services/data/${SALESFORCE_API_VERSION}/chatter/users/me`);
+    
+    if (!userInfo?.id) {
+      console.error('[DEBUG] [TRACE-FLAG] Could not get current user ID');
+      return null;
+    }
+    
+    const userId = userInfo.id;
+    console.log('[DEBUG] [TRACE-FLAG] Current user ID:', userId);
+    
+    // Check if there's already an existing TraceFlag for this user with our DebugLevel
+    const soql = `SELECT Id FROM TraceFlag WHERE TracedEntityId = '${userId}' AND DebugLevelId = '${debugLevelId}' LIMIT 1`;
+    console.log('[DEBUG] [TRACE-FLAG] Checking existing TraceFlag with SOQL:', soql);
+    
+    const existingResult = await makeApiRequestForEnv(envId, `/services/data/${SALESFORCE_API_VERSION}/tooling/query/?q=${encodeURIComponent(soql)}`);
+    console.log('[DEBUG] [TRACE-FLAG] Existing TraceFlag query result:', JSON.stringify(existingResult));
+    
+    // Calculate new expiration date (1 hour from now)
+    const startDate = new Date();
+    const expirationDate = new Date(startDate.getTime() + 1 * 60 * 60 * 1000);
+    
+    let resultId = null;
+    
+    if (existingResult?.records?.length > 0) {
+      // Update existing TraceFlag
+      const existingId = existingResult.records[0].Id;
+      console.log('[DEBUG] [TRACE-FLAG] Found existing TraceFlag, updating:', existingId);
+      
+      const updateData = {
+        StartDate: startDate.toISOString(),
+        ExpirationDate: expirationDate.toISOString()
+      };
+      
+      const updateEndpoint = `/services/data/${SALESFORCE_API_VERSION}/tooling/sobjects/TraceFlag/${existingId}`;
+      console.log('[DEBUG] [TRACE-FLAG] Updating TraceFlag at:', updateEndpoint);
+      
+      await makeApiRequestForEnv(envId, updateEndpoint, {
+        method: 'PATCH',
+        body: JSON.stringify(updateData)
+      });
+      
+      resultId = existingId;
+      console.log('[DEBUG] [TRACE-FLAG] Updated TraceFlag with Id:', resultId);
+    } else {
+      // Create new TraceFlag
+      console.log('[DEBUG] [TRACE-FLAG] No existing TraceFlag found, creating new one (1 hour duration)');
+      
+      const traceFlagData = {
+        TracedEntityId: userId,
+        DebugLevelId: debugLevelId,
+        LogType: 'USER_DEBUG',
+        StartDate: startDate.toISOString(),
+        ExpirationDate: expirationDate.toISOString()
+      };
+      
+      console.log('[DEBUG] [TRACE-FLAG] Creating TraceFlag with data:', JSON.stringify(traceFlagData));
+      
+      const createEndpoint = `/services/data/${SALESFORCE_API_VERSION}/tooling/sobjects/TraceFlag`;
+      console.log('[DEBUG] [TRACE-FLAG] Creating TraceFlag at:', createEndpoint);
+      
+      const createResult = await makeApiRequestForEnv(envId, createEndpoint, {
+        method: 'POST',
+        body: JSON.stringify(traceFlagData)
+      });
+      
+      console.log('[DEBUG] [TRACE-FLAG] Create TraceFlag result:', JSON.stringify(createResult));
+      
+      if (createResult?.id) {
+        resultId = createResult.id;
+        console.log('[DEBUG] [TRACE-FLAG] Created TraceFlag with Id:', resultId);
+      } else {
+        console.error('[DEBUG] [TRACE-FLAG] Failed to create TraceFlag:', createResult);
+      }
+    }
+    
+    return resultId;
+  } catch (error) {
+    console.error('[DEBUG] [TRACE-FLAG] createTraceFlag error:', error.message);
+    return null;
+  }
+}
+
+// Enable debug logging by creating TraceFlag
+async function enableDebugLogging(envId) {
+  console.log('[DEBUG] [TRACE-FLAG] enableDebugLogging called, envId:', envId);
+  
+  try {
+    // Step 1: Get or create DebugLevel
+    const debugLevelId = await getOrCreateDebugLevel(envId);
+    if (!debugLevelId) {
+      console.error('[DEBUG] [TRACE-FLAG] Could not get or create DebugLevel');
+      return false;
+    }
+    
+    // Step 2: Create TraceFlag for current user
+    const traceFlagId = await createTraceFlag(envId, debugLevelId);
+    if (!traceFlagId) {
+      console.error('[DEBUG] [TRACE-FLAG] Could not create TraceFlag');
+      return false;
+    }
+    
+    console.log('[DEBUG] [TRACE-FLAG] Debug logging enabled successfully');
+    return true;
+  } catch (error) {
+    console.error('[DEBUG] [TRACE-FLAG] enableDebugLogging error:', error.message);
+    return false;
+  }
+}
+
 // Make API request for specific environment
 async function makeApiRequestForEnv(envId, endpoint, options = {}) {
   console.log('[DEBUG] [USER-FLOW] makeApiRequestForEnv called, envId:', envId, 'endpoint:', endpoint);
@@ -647,6 +826,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               console.log('[DEBUG] Saved user name to environment:', userName);
             }
             
+            // Enable debug logging (create TraceFlag)
+            await enableDebugLogging(envId);
+            
             await saveState();
             sendResponse({ 
               success: true, 
@@ -687,6 +869,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               environments[envId].userName = userName;
               console.log('[DEBUG] Saved user name to environment:', userName);
             }
+            
+            // Enable debug logging (create TraceFlag)
+            await enableDebugLogging(envId);
             
             await saveState();
             sendResponse({ 
@@ -774,6 +959,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case 'stop-polling': {
           stopPolling();
           sendResponse({ success: true });
+          break;
+        }
+        
+        case 'renew-traceflag': {
+          if (!activeEnvId) {
+            sendResponse({ success: false, error: 'No active environment' });
+            return;
+          }
+          
+          console.log('[DEBUG] [TRACE-FLAG] Renewing TraceFlag...');
+          const result = await enableDebugLogging(activeEnvId);
+          
+          if (result) {
+            sendResponse({ success: true });
+          } else {
+            sendResponse({ success: false, error: 'Failed to renew TraceFlag' });
+          }
           break;
         }
         
